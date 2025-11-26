@@ -1,11 +1,7 @@
 import numpy as np
 
-# ============================================================
-#    MATRIZ DE UN ELEMENTO TRIANGULAR P1 (TRIÁNGULO RECTÁNGULO)
-# ============================================================
-
 def elemento_K(x1, y1, x2, y2, x3, y3):
-    # Área del triángulo
+
     A = 0.5 * np.linalg.det(np.array([
         [1, x1, y1],
         [1, x2, y2],
@@ -15,7 +11,7 @@ def elemento_K(x1, y1, x2, y2, x3, y3):
     if A <= 0:
         raise ValueError("El área del triángulo no es positiva, revisar nodos.")
 
-    # Coeficientes b_i, c_i
+    
     b1 = y2 - y3
     b2 = y3 - y1
     b3 = y1 - y2
@@ -24,7 +20,6 @@ def elemento_K(x1, y1, x2, y2, x3, y3):
     c2 = x1 - x3
     c3 = x2 - x1
 
-    # Matriz K del elemento
     K = (1/(4*A)) * np.array([
         [b1*b1 + c1*c1,   b1*b2 + c1*c2,   b1*b3 + c1*c3],
         [b2*b1 + c2*c1,   b2*b2 + c2*c2,   b2*b3 + c2*c3],
@@ -33,12 +28,6 @@ def elemento_K(x1, y1, x2, y2, x3, y3):
 
     return K, A
 
-
-# ============================================================
-#   EJEMPLO: TRIÁNGULO RECTÁNGULO
-# ============================================================
-
-# Nodos de la figura (ejemplo estándar)
 x1, y1 = 0, 0
 x2, y2 = 1, 0
 x3, y3 = 0, 1
