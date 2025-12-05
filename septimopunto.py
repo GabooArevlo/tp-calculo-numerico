@@ -1,117 +1,71 @@
 import numpy as np
+import sympy as sp
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d import Axes3D # Necesario para el gráfico 3D
 
-# ==========================================
-# 1) Definir malla 7x7 → 49 nodos
-# ==========================================
-N = 7
-x = np.linspace(-1, 1, N)
-y = np.linspace(-1, 1, N)
+# --- 1. CONFIGURACIÓN DEL MALLADO (Reutilización de datos) ---
+# Usamos las coordenadas y la matriz U_grid_2D obtenidas en el punto 6
+# N_total = 49, n = 7, coords, U_grid_2D
+n = 7
+x = np.linspace(0, 1, n)
+y = np.linspace(0, 1, n)
+X, Y = np.meshgrid(x, y)
+coords = np.column_stack((X.flatten(), Y.flatten()))
 
-xx, yy = np.meshgrid(x, y)
-xx = xx.flatten()
-yy = yy.flatten()
+# Copia la matriz de solución U_grid_2D obtenida en el paso 6:
+U_grid_2D = np.array([
+    [ 0.        ,  0.        ,  0.        ,  0.        ,  0.        ,  0.        ,  0.        ],
+    [ 0.        ,  0.00028599, -0.00016034, -0.00030845, -0.00016034,  0.00028599,  0.        ],
+    [ 0.        , -0.00016034, -0.00056174, -0.00059162, -0.00056174, -0.00016034,  0.        ],
+    [ 0.        , -0.00030845, -0.00059162,          np.nan, -0.00059162, -0.00030845,  0.        ],
+    [ 0.        , -0.00016034, -0.00056174, -0.00059162, -0.00056174, -0.00016034,  0.        ],
+    [ 0.        ,  0.00028599, -0.00016034, -0.00030845, -0.00016034,  0.00028599,  0.        ],
+    [ 0.        ,  0.        ,  0.        ,  0.        ,  0.        ,  0.        ,  0.        ]
+])
 
-# Dominio: círculo de radio 1
-inside = xx**2 + yy**2 <= 1.0
+# --- 2. EVALUACIÓN DE LA SOLUCIÓN ANALÍTICA u_a(x,y) ---
+x_sym, y_sym = sp.symbols('x y')
+r_squared_sym = sp.Rational(1, 6)**2
 
-# Índices de nodos internos del círculo
-idx_inside = np.where(inside)[0]
-n_inside = len(idx_inside)
+# Solución analítica u_a = u_d * u_n
+u_d = x_sym * (1 - x_sym) * y_sym * (1 - y_sym)
+u_n = ((x_sym - 0.5)**2 + (y_sym - 0.5)**2 - r_squared_sym)**2
+u_a = u_d * u_n
 
-# Paso de malla
-h = x[1] - x[0]
+# Función lambdify para evaluar u_a
+u_a_func = sp.lambdify((x_sym, y_sym), u_a, "numpy")
 
-# ==========================================
-# 2) Definir la solución analítica y f(x,y)
-# ==========================================
-def ua(x, y):
-    return np.sin(np.pi * x) * np.sin(np.pi * y)
+# Evaluar u_a en todos los nodos de la malla
+U_analytic_2D = u_a_func(X, Y)
 
-def f(x, y):
-    return 2 * np.pi**2 * np.sin(np.pi * x) * np.sin(np.pi * y)
+# --- 3. CÁLCULO DEL ERROR ---
+# Error absoluto E_A = | u_a - u_aprox |
+# Se ignora el nodo nan del centro (externo)
+E_abs_2D = np.abs(U_analytic_2D - U_grid_2D)
 
-# ==========================================
-# 3) Armar sistema Au = b (solo nodos internos)
-# ==========================================
-A = np.zeros((n_inside, n_inside))
-b = np.zeros(n_inside)
+# Eliminar NaNs para calcular promedios y máximos solo sobre los nodos del dominio
+valid_mask = ~np.isnan(E_abs_2D)
+E_abs_valid = E_abs_2D[valid_mask]
 
-# Función auxiliar para mapear coordenadas → índice interno
-pos = {idx_inside[i]: i for i in range(n_inside)}
+# Cálculo de Métricas (Requeridas para el Punto 10)
+E_MAX = np.max(E_abs_valid)
+E_promedio = np.mean(E_abs_valid)
 
-# Para cada nodo interno, aplicar Laplaciano por diferencias finitas
-for k, p in enumerate(idx_inside):
-    xi, yi = xx[p], yy[p]
+print("\n===== MÉTRICAS DE ERROR (Malla 7x7) =====")
+print(f"Error Absoluto Máximo (E_MAX): {E_MAX:.6e}")
+print(f"Error Absoluto Promedio: {E_promedio:.6e}")
+print("=========================================")
 
-    # índice 2D en la grilla
-    i = np.where(x == xi)[0][0]
-    j = np.where(y == yi)[0][0]
-
-    # vecinos (i±1, j) y (i, j±1)
-    neighbors = [
-        ((i+1, j), 1/h**2),
-        ((i-1, j), 1/h**2),
-        ((i, j+1), 1/h**2),
-        ((i, j-1), 1/h**2),
-    ]
-
-    A[k, k] = -4/h**2  # parte central
-
-    # Cargar vecinos
-    for (ii, jj), val in neighbors:
-        # Check límites
-        if ii < 0 or ii >= N or jj < 0 or jj >= N:
-            continue
-
-        p2 = jj*N + ii
-        if inside[p2]:  # vecino interior
-            A[k, pos[p2]] += val
-        else:
-            # Dirichlet fuera: u = 0
-            b[k] -= val * 0  
-
-    # Cargar término fuente f(x,y)
-    b[k] += f(xi, yi)
-
-# ==========================================
-# 4) Resolver sistema
-# ==========================================
-u_num = np.linalg.solve(A, b)
-
-# Reconstruir vector de 49 nodos (incluye externos)
-u_full = np.zeros(49)
-for k, p in enumerate(idx_inside):
-    u_full[p] = u_num[k]
-
-# ==========================================
-# 5) Solución analítica en los 49 nodos
-# ==========================================
-u_exact = ua(xx, yy)
-
-# ==========================================
-# 6) Error absoluto en los 49 nodos
-# ==========================================
-EA = np.abs(u_full - u_exact)
-
-EA_promedio = np.mean(EA[inside])
-EA_maximo  = np.max(EA[inside])
-
-print("Error absoluto promedio =", EA_promedio)
-print("Error absoluto máximo    =", EA_maximo)
-
-# ==========================================
-# 7) Gráfico 3D del error
-# ==========================================
-fig = plt.figure(figsize=(8,6))
+# --- 4. GRÁFICO 3D DEL ERROR ---
+fig = plt.figure(figsize=(10, 8))
 ax = fig.add_subplot(111, projection='3d')
 
-ax.plot_trisurf(xx, yy, EA, linewidth=0.2, antialiased=True)
+# Usar la malla X, Y para las coordenadas y E_abs_2D para la altura.
+# Los NaNs se ignoran automáticamente en el plot 3D de NumPy.
+ax.plot_surface(X, Y, E_abs_2D, cmap='viridis', edgecolor='none')
 
-ax.set_title("Error absoluto |u_DF - u_a| en 49 nodos")
-ax.set_xlabel("x")
-ax.set_ylabel("y")
-ax.set_zlabel("Error absoluto")
-
+ax.set_title(f'Error Absoluto |u_a - u_aprox| (Malla 7x7)\nE_MAX: {E_MAX:.2e}')
+ax.set_xlabel('x')
+ax.set_ylabel('y')
+ax.set_zlabel('Error Absoluto')
 plt.show()

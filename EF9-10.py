@@ -1,104 +1,210 @@
+# ============================================================
+# CÓDIGO EF: Puntos 7, 9 y 10 (Corregido y Completo)
+# ============================================================
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+from scipy.spatial import Delaunay
+import sympy as sp
+import scipy.sparse.linalg as spla
 
-# ============================================================
-# 1. MALLA REGULAR NxN
-# ============================================================
-N = 20
-x = np.linspace(0, 1, N)
-y = np.linspace(0, 1, N)
-hx = 1/(N-1)
-hy = 1/(N-1)
+# -------------------------
+# 1) DEFINICIÓN ANALÍTICA (CONSISTENTE CON PUNTOS ANTERIORES)
+# -------------------------
+x, y, theta = sp.symbols('x y theta')
 
-X, Y = np.meshgrid(x, y)
-num_nodes = N*N
+# Funciones de la solución analítica del problema (u_a = u_d - u_n)
+u_d = x * (1 - x) * y * (1 - y)
+u_n = ((x - sp.Rational(1,2))**2 + (y - sp.Rational(1,2))**2 - (sp.Rational(1,6))**2)**2
+u_a_sym = u_d - u_n
 
-def idx(i, j):
-    return i*N + j
+# Laplaciano simbólico -> f_a (Función fuente)
+f_a_sym = sp.simplify(sp.diff(u_a_sym, x, 2) + sp.diff(u_a_sym, y, 2))
+# Gradiente para Neumann (necesario para el C.B. gN)
+u_x_sym = sp.diff(u_a_sym, x)
+u_y_sym = sp.diff(u_a_sym, y)
 
-# ============================================================
-# 2. SOLUCIÓN ANALÍTICA
-# ============================================================
-def u_analitica(x, y):
-    return x*y*(x-1)*(y-1) - ((x-0.5)**4 + (y-0.5)**4 - 0.0277777777777778)
+# Funciones numéricas
+u_a_num = sp.lambdify((x, y), u_a_sym, "numpy")
+fa = sp.lambdify((x, y), f_a_sym, "numpy")
+u_x_num = sp.lambdify((x, y), u_x_sym, "numpy")
+u_y_num = sp.lambdify((x, y), u_y_sym, "numpy")
 
-def f_fuente(x, y):
-    return -14*x**2 + 14*x - 14*y**2 + 14*y - 7.77777777777778
+# -------------------------
+# 2) NODOS Y CONDICIONES DE BORDE (Reutilizando la configuración de tu Punto 7)
+# -------------------------
+nodes = np.array([
+    (0.0, 0.0), (0.25, 0.0), (0.5, 0.0), (0.75, 0.0), (1.0, 0.0),
+    (1.0, 0.25), (1.0, 0.5), (1.0, 0.75), (1.0, 1.0),
+    (0.75, 1.0), (0.5, 1.0), (0.25, 1.0), (0.0, 1.0),
+    (0.0, 0.75), (0.0, 0.5), (0.0, 0.25),
+    (0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75),
+    # Puntos de Neumann (en el círculo)
+    (0.5 + 0.3333/2.0, 0.5), (0.5 - 0.3333/2.0, 0.5),
+    (0.5, 0.5 + 0.3333/2.0), (0.5, 0.5 - 0.3333/2.0),
+    (0.5, 0.5), # Externo (Nodo 24)
+    (0.5, 0.25), (0.5, 0.75), (0.25, 0.5)
+])
+n_nodes = nodes.shape[0]
+center = np.array([0.5, 0.5])
+r = 0.3333 / 2.0
+tol = 1e-6
 
-U_exacta = u_analitica(X, Y)
+dist = np.linalg.norm(nodes - center, axis=1)
+is_dirichlet = np.isclose(nodes[:,0], 0.0) | np.isclose(nodes[:,0], 1.0) | \
+               np.isclose(nodes[:,1], 0.0) | np.isclose(nodes[:,1], 1.0)
+is_externo = np.isclose(dist, 0.0, atol=1e-8) # Solo el nodo 24 (0.5, 0.5)
+is_neumann = np.isclose(dist, r, atol=1e-4)
 
-# ============================================================
-# 3. MATRIZ GLOBAL (Laplaciano 5 puntos)
-# ============================================================
-A = np.zeros((num_nodes, num_nodes))
-b = np.zeros(num_nodes)
+# Mallado
+valid_mask = ~is_externo
+global_idx_valid = np.where(valid_mask)[0]
+tri = Delaunay(nodes[valid_mask])
+elements = [tuple(global_idx_valid[tri_local]) for tri_local in tri.simplices]
 
-for i in range(N):
-    for j in range(N):
+# Mapeo de índices
+idx_map = -np.ones(n_nodes, dtype=int)
+counter = 0
+for k in range(n_nodes):
+    if not is_externo[k]:
+        idx_map[k] = counter
+        counter += 1
+N_unknowns = counter
 
-        k = idx(i, j)
-        xk = X[i, j]
-        yk = Y[i, j]
+# -------------------------
+# 3) FUNCIONES ELEMENTALES (De tus Puntos 3/4)
+# -------------------------
+def element_stiffness(x1, y1, x2, y2, x3, y3):
+    A = 0.5 * np.linalg.det(np.array([[1, x1, y1], [1, x2, y2], [1, x3, y3]]))
+    if A <= 0: raise ValueError("Área no positiva.")
+    b1 = y2 - y3; b2 = y3 - y1; b3 = y1 - y2
+    c1 = x3 - x2; c2 = x1 - x3; c3 = x2 - x1
+    b = np.array([b1, b2, b3]); c = np.array([c1, c2, c3])
+    Ke = (1.0 / (4.0 * A)) * (np.outer(b,b) + np.outer(c,c))
+    return Ke, A
 
-        # Términos fuente
-        b[k] = f_fuente(xk, yk)
+def element_load(x1, y1, x2, y2, x3, y3, f_func):
+    xc = (x1 + x2 + x3) / 3.0
+    yc = (y1 + y2 + y3) / 3.0
+    A = 0.5 * np.linalg.det(np.array([[1, x1, y1], [1, x2, y2], [1, x3, y3]]))
+    fe = np.ones(3) * (A * f_func(xc, yc) / 3.0)
+    return fe
 
-        # Caso borde → se impondrá después
-        if i == 0 or i == N-1 or j == 0 or j == N-1:
-            continue
+# Flujo de Neumann gN = Grad(u_a) . n
+def gN_at_point(xp, yp):
+    dx = xp - center[0]; dy = yp - center[1]
+    distancia = np.hypot(dx, dy)
+    if np.isclose(distancia, 0.0, atol=1e-8): return 0.0
+    nx = dx / distancia; ny = dy / distancia
+    return u_x_num(xp, yp) * nx + u_y_num(xp, yp) * ny
 
-        # FEM simplificado (≈ DF 5 puntos)
-        A[k, idx(i, j)] = -2/(hx*hx) - 2/(hy*hy)
-        A[k, idx(i+1, j)] = 1/(hx*hx)
-        A[k, idx(i-1, j)] = 1/(hx*hx)
-        A[k, idx(i, j+1)] = 1/(hy*hy)
-        A[k, idx(i, j-1)] = 1/(hy*hy)
+# -------------------------
+# 4) ENSAMBLAJE GLOBAL A y b
+# -------------------------
+from scipy.sparse import lil_matrix
+A = lil_matrix((N_unknowns, N_unknowns), dtype=float)
+b = np.zeros(N_unknowns, dtype=float)
 
-# ============================================================
-# 4. CONDICIONES DE BORDE DIRICHLET
-# ============================================================
-for i in range(N):
-    for j in range(N):
+for el in elements:
+    n0, n1, n2 = el
+    x1, y1 = nodes[n0]; x2, y2 = nodes[n1]; x3, y3 = nodes[n2]
+    Ke, Area = element_stiffness(x1, y1, x2, y2, x3, y3)
+    fe = element_load(x1, y1, x2, y2, x3, y3, fa)
 
-        if i == 0 or i == N-1 or j == 0 or j == N-1:
+    local_nodes = [n0, n1, n2]
+    for i_local, ni in enumerate(local_nodes):
+        Ii = idx_map[ni]
+        if Ii == -1: continue
+        b[Ii] += fe[i_local]
+        for j_local, nj in enumerate(local_nodes):
+            Jj = idx_map[nj]
+            if Jj == -1: continue
+            A[Ii, Jj] += Ke[i_local, j_local]
 
-            k = idx(i, j)
-            A[k, :] = 0
-            A[k, k] = 1
-            b[k] = u_analitica(X[i, j], Y[i, j])
+# C.B. Neumann (Aporte al vector b)
+edges = set()
+for el in elements:
+    tri_nodes = list(el)
+    pairs = [(tri_nodes[0], tri_nodes[1]), (tri_nodes[1], tri_nodes[2]), (tri_nodes[2], tri_nodes[0])]
+    for u,v in pairs:
+        edge = (min(u,v), max(u,v)); edges.add(edge)
 
-# ============================================================
-# 5. RESOLVER SISTEMA LINEAL (Punto 9)
-# ============================================================
-U_h = np.linalg.solve(A, b)
-U_h = U_h.reshape((N, N))
+for (a,bidx) in edges:
+    if is_neumann[a] and is_neumann[bidx]:
+        xa, ya = nodes[a]; xb, yb = nodes[bidx]
+        Ledge = np.hypot(xa - xb, ya - yb)
+        xm, ym = 0.5*(xa+xb), 0.5*(ya+yb)
+        gmid = gN_at_point(xm, ym)
+        contrib = (Ledge/2.0) * gmid * 0.5
+        Ia = idx_map[a]; Ib = idx_map[bidx]
+        if Ia != -1: b[Ia] += contrib
+        if Ib != -1: b[Ib] += contrib
 
-# ============================================================
-# 6. GRÁFICO 3D DE LA SOLUCIÓN NUMÉRICA
-# ============================================================
-fig = plt.figure(figsize=(10, 7))
-ax = fig.add_subplot(111, projection='3d')
-ax.plot_surface(X, Y, U_h, linewidth=0, antialiased=True)
-ax.set_title("Solución Numérica FEM (Punto 9)")
+# C.B. Dirichlet (Imposición de u=0 en la frontera)
+for k in range(n_nodes):
+    if is_dirichlet[k] and (idx_map[k] != -1):
+        idx = idx_map[k]
+        A[idx, :] = 0.0
+        A[idx, idx] = 1.0
+        b[idx] = u_a_num(nodes[k, 0], nodes[k, 1]) # Usar el valor analítico (u_a=0 en el borde)
+
+# -------------------------
+# 5) RESOLVER SISTEMA (Punto 9)
+# -------------------------
+A_csr = A.tocsr()
+U_approx = spla.spsolve(A_csr, b)
+
+# Reconstruir la solución completa (incluyendo nodos Dirichlet y Externo)
+U_full = np.full(n_nodes, np.nan)
+for k in range(n_nodes):
+    if idx_map[k] != -1:
+        U_full[k] = U_approx[idx_map[k]]
+
+# -------------------------
+# 6) CÁLCULO DE ERROR (Punto 10)
+# -------------------------
+# Valores analíticos en los nodos (excluyendo 'Externo')
+U_a_valid = u_a_num(nodes[valid_mask, 0], nodes[valid_mask, 1])
+U_h_valid = U_approx
+
+# Error en los nodos válidos
+Error_valid = np.abs(U_h_valid - U_a_valid)
+error_max = np.max(Error_valid)
+error_promedio = np.mean(Error_valid)
+
+# Reconstruir el vector de error completo para el gráfico
+Error_full = np.full(n_nodes, np.nan)
+for k in range(n_nodes):
+    if idx_map[k] != -1:
+        Error_full[k] = Error_valid[idx_map[k]]
+
+# -------------------------
+# 7) GRÁFICOS (Punto 9 y 10)
+# -------------------------
+from matplotlib.tri import Triangulation
+
+triang = Triangulation(nodes[:, 0], nodes[:, 1], tri.simplices)
+
+# Gráfico 3D de la Solución (Punto 9)
+fig_sol = plt.figure(figsize=(10, 7))
+ax_sol = fig_sol.add_subplot(111, projection='3d')
+ax_sol.plot_trisurf(triang, U_full, cmap='viridis', linewidth=0.2, antialiased=True)
+ax_sol.set_title("Solución Numérica FEM P1 (Punto 9)")
+ax_sol.set_xlabel('x'); ax_sol.set_ylabel('y'); ax_sol.set_zlabel('$u_h$')
 plt.show()
 
-# ============================================================
-# 7. ERROR (Punto 9–10)
-# ============================================================
-Error = np.abs(U_h - U_exacta)
-error_max = np.max(Error)
-error_promedio = np.mean(Error)
-
-print("\n========= ERRORES FEM =========")
-print("Error absoluto máximo =", error_max)
-print("Error absoluto promedio =", error_promedio)
-
-# ============================================================
-# 8. GRÁFICO 3D DEL ERROR
-# ============================================================
-fig = plt.figure(figsize=(10, 7))
-ax = fig.add_subplot(111, projection='3d')
-ax.plot_surface(X, Y, Error, linewidth=0, antialiased=True)
-ax.set_title("Error absoluto |u_h - u_a| (Punto 10)")
+# Gráfico 3D del Error (Punto 10)
+fig_err = plt.figure(figsize=(10, 7))
+ax_err = fig_err.add_subplot(111, projection='3d')
+ax_err.plot_trisurf(triang, Error_full, cmap='plasma', linewidth=0.2, antialiased=True)
+ax_err.set_title("Error absoluto $|u_h - u_a|$ (Punto 10)")
+ax_err.set_xlabel('x'); ax_err.set_ylabel('y'); ax_err.set_zlabel('Error Absoluto')
 plt.show()
+
+# -------------------------
+# 8) SALIDA
+# -------------------------
+print("\n========= ERRORES FEM P1 (Malla manual) =========")
+print(f"Error absoluto máximo = {error_max:.8f}")
+print(f"Error absoluto promedio = {error_promedio:.8f}")
+print("=================================================")
