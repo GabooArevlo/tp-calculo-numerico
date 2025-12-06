@@ -1,142 +1,153 @@
+# =========================================================
+# PUNTO 6: Resolver A u = b (Sistema del Punto 5)
+# - Autosuficiente con f_a(x,y) correcta.
+# - Utiliza el estencil modificado para Neumann.
+# =========================================================
 import numpy as np
+import sympy as sp
+from scipy.sparse import lil_matrix, csr_matrix
+from scipy.sparse.linalg import spsolve # Solucionador para matrices dispersas
+import matplotlib.pyplot as plt
 
-# ---------------------------------------------------
-# 1. Definir la función f(x,y) = fa(x,y) del punto analítico
-# ---------------------------------------------------
-def fa(x, y):
-    # ❗❗❗ COMPLETAR con tu función real
-    # Ejemplo: return np.sin(np.pi * x) * np.sin(np.pi * y)
-    return np.sin(np.pi * x) * np.sin(np.pi * y)
+# --- 1. PLANTEO ANALÍTICO Y FUNCIÓN FUENTE (f_a) ---
+x_sym, y_sym = sp.symbols('x y')
+r_squared_sym = sp.Rational(1, 6)**2
 
+u_d = x_sym * (1 - x_sym) * y_sym * (1 - y_sym)
+u_n = ((x_sym - 0.5)**2 + (y_sym - 0.5)**2 - r_squared_sym)**2
+u_a = u_d * u_n
+lap_u_a = sp.diff(u_a, x_sym, 2) + sp.diff(u_a, y_sym, 2)
+f_a_func = sp.lambdify((x_sym, y_sym), sp.simplify(lap_u_a), "numpy")
 
-# ---------------------------------------------------
-# 2. Parámetros y mallado (mismo que antes)
-# ---------------------------------------------------
+def f_xy(xv, yv):
+    """Función fuente (f_a = Delta u_a) para el RHS del sistema."""
+    return f_a_func(xv, yv)
+
+# --- 2. MALLADO Y CLASIFICACIÓN DE NODOS (Igual que Punto 5) ---
 n = 7
 L = 1.0
 x = np.linspace(0, L, n)
 y = np.linspace(0, L, n)
 h = x[1] - x[0]
+N_total = n * n
 
 X, Y = np.meshgrid(x, y)
 coords = np.column_stack((X.flatten(), Y.flatten()))
 
 center = (0.5, 0.5)
-r = 0.3333 / 2
+r = 0.3333 / 2.0 # radio del hueco
 
-dist = np.sqrt((coords[:,0]-center[0])**2 + (coords[:,1]-center[1])**2)
-node_type = np.full(49, 'Interno', dtype=object)
+# Clasificaciones base
+is_dirichlet = (np.isclose(coords[:,0], 0) | np.isclose(coords[:,0], L) |
+                np.isclose(coords[:,1], 0) | np.isclose(coords[:,1], L))
+dist_to_center = np.sqrt((coords[:,0] - center[0])**2 + (coords[:,1] - center[1])**2)
+is_inside_hole = dist_to_center < r - 1e-12
 
-# Dirichlet
-node_type[(coords[:,0]==0) | (coords[:,0]==1) | (coords[:,1]==0) | (coords[:,1]==1)] = 'Dirichlet'
+node_type = np.full(N_total, 'Interno', dtype=object)
+node_type[is_dirichlet] = 'Dirichlet'
+node_type[is_inside_hole] = 'Externo'
 
-# Externo
-node_type[dist < r] = 'Externo'
+def ij_to_k(i, j): return i * n + j
 
-# Identificar Neumann
-def ij_to_k(i,j): return i*n + j
+# Detectar nodos Neumann
 for i in range(n):
     for j in range(n):
-        k = ij_to_k(i,j)
+        k = ij_to_k(i, j)
         if node_type[k] != 'Interno': continue
-        for ii,jj in [(i+1,j),(i-1,j),(i,j+1),(i,j-1)]:
+        for ii, jj in [(i+1, j), (i-1, j), (i, j+1), (i, j-1)]:
             if 0 <= ii < n and 0 <= jj < n:
-                kk = ij_to_k(ii,jj)
+                kk = ij_to_k(ii, jj)
                 if node_type[kk] == 'Externo':
                     node_type[k] = 'Neumann'
                     break
 
-# Mapa de incógnitas
-idx_map = -np.ones(49, dtype=int)
+# Crear índice de incógnitas (Solo Internos y Neumann)
+idx_map = -np.ones(N_total, dtype=int)
 counter = 0
-for k in range(49):
-    if node_type[k] != 'Externo':
+for k in range(N_total):
+    if node_type[k] in ['Interno', 'Neumann']:
         idx_map[k] = counter
         counter += 1
+N_unknowns = counter
 
-N = counter
-A = np.zeros((N,N))
-b = np.zeros(N)
+# --- 3. CONSTRUCCIÓN DEL SISTEMA A u = b (Corregida) ---
+A = lil_matrix((N_unknowns, N_unknowns), dtype=float)
+b = np.zeros(N_unknowns)
 
-
-# ---------------------------------------------------
-# 3. Armado de A y b con f(x,y) incluida
-# ---------------------------------------------------
 for i in range(n):
     for j in range(n):
-        k = ij_to_k(i,j)
+        k = ij_to_k(i, j)
         row = idx_map[k]
-        if row == -1:
-            continue
+        if row == -1: 
+            continue # Nodos Dirichlet y Externos no son incógnitas
 
-        tipo = node_type[k]
         xk, yk = coords[k]
+        
+        # 4u - sum(u_vecinos) = -h^2 f
+        center_coeff = 4.0 
+        b_val = -h**2 * f_xy(xk, yk) # RHS usando f_a(x,y)
+        
+        neighbors = [(i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1)]
+        
+        for (ii, jj) in neighbors:
+            kk = ij_to_k(ii, jj)
+            
+            if 0 <= ii < n and 0 <= jj < n:
+                tipo_vecino = node_type[kk]
+                
+                # Caso 1: Vecino es Externo (Hueco) -> Condición Neumann (u_vecino = u_center)
+                if tipo_vecino == 'Externo':
+                    center_coeff -= 1.0 # Modifica el coeficiente central: 4 -> 3
+                    
+                # Caso 2: Vecino es Dirichlet (Frontera Exterior, u=0)
+                elif tipo_vecino == 'Dirichlet':
+                    # Término del Laplaciano: -1 * u_dirichlet = -1 * 0. No afecta b_val.
+                    pass 
+                
+                # Caso 3: Vecino es otra Incógnita
+                else:
+                    neighbor_idx = idx_map[kk]
+                    A[row, neighbor_idx] = -1.0 # Coeficiente -1 para el Laplaciano
 
-        # -------------------------
-        # Dirichlet
-        # -------------------------
-        if tipo == 'Dirichlet':
-            A[row,row] = 1.0
-            b[row] = 0.0
-            continue
+        # Fijar coeficiente diagonal
+        A[row, row] = center_coeff
+        
+        # Fijar RHS
+        b[row] = b_val
 
-        # -------------------------
-        # Neumann
-        # -------------------------
-        if tipo == 'Neumann':
-            nx = (xk - center[0]) / dist[k]
-            ny = (yk - center[1]) / dist[k]
+# --- 4. RESOLVER A u = b ---
+print("\nResolviendo el sistema lineal...")
+A_csr = csr_matrix(A)
+u_vec = spsolve(A_csr, b)
 
-            west  = ij_to_k(i, j-1)
-            east  = ij_to_k(i, j+1)
-            south = ij_to_k(i-1, j)
-            north = ij_to_k(i+1, j)
+# --- 5. RECONSTRUIR SOLUCIÓN Y GRAFICAR ---
+U_grid = np.full(N_total, np.nan, dtype=float)
 
-            if idx_map[east]  != -1: A[row, idx_map[east]]  += nx/(2*h)
-            if idx_map[west]  != -1: A[row, idx_map[west]]  -= nx/(2*h)
-            if idx_map[north] != -1: A[row, idx_map[north]] += ny/(2*h)
-            if idx_map[south] != -1: A[row, idx_map[south]] -= ny/(2*h)
+# Poner Dirichlet = 0 en fronteras exteriores
+U_grid[is_dirichlet] = 0.0
 
-            b[row] = 0.0
-            continue
+# Poner incógnitas resueltas
+for k in range(N_total):
+    mk = idx_map[k]
+    if mk != -1:
+        U_grid[k] = u_vec[mk]
+        
+U_grid_2D = U_grid.reshape((n, n))
 
-        # -------------------------
-        # Interno → Laplaciano
-        # -------------------------
-        A[row, row] = 4/h**2
+print(f"\nSolución u en nodos ({N_unknowns} incógnitas):")
+print(U_grid_2D)
 
-        neighbors = [
-            ij_to_k(i, j-1),   # West
-            ij_to_k(i, j+1),   # East
-            ij_to_k(i-1, j),   # South
-            ij_to_k(i+1, j)    # North
-        ]
+# Gráfico de la solución
+plt.figure(figsize=(7,7))
+plt.imshow(U_grid_2D, origin='lower', extent=(0,1,0,1))
+plt.colorbar(label='u (aprox)')
 
-        for nb in neighbors:
-            if idx_map[nb] != -1:
-                A[row, idx_map[nb]] = -1/h**2
+# Marcar el hueco (círculo interior)
+center_p = (0.5, 0.5)
+circle = plt.Circle(center_p, r, color='white', fill=True, zorder=10)
+plt.gca().add_patch(circle)
 
-        # Cargar f(x,y) en el vector b
-        b[row] = fa(xk, yk)
-
-
-# ---------------------------------------------------
-# 4. Resolver sistema lineal
-# ---------------------------------------------------
-u_sol = np.linalg.solve(A, b)
-
-# Reconstruir solución completa incluyendo nodos externos
-u_full = np.zeros(49)
-for k in range(49):
-    if idx_map[k] != -1:
-        u_full[k] = u_sol[idx_map[k]]
-    else:
-        u_full[k] = np.nan   # nodos fuera del dominio
-
-
-# ---------------------------------------------------
-# 5. Mostrar la solución en formato de matriz 7×7
-# ---------------------------------------------------
-U = u_full.reshape((n,n))
-print("Solución U(x,y):")
-print(U)
+plt.title(f"Solución DF (n={n}, f=$f_a$)")
+plt.xlabel('x'); plt.ylabel('y')
+plt.gca().set_aspect('equal')
+plt.show()

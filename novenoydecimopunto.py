@@ -1,209 +1,174 @@
-# Código autocontenido: define solve_for_N y construye la tabla del punto 9
+# =========================================================
+# PUNTOS 9 Y 10: Análisis de Resultados y Gráficos de Convergencia
+# =========================================================
 import numpy as np
-import pandas as pd
+import sympy as sp
 import matplotlib.pyplot as plt
+from scipy.sparse import lil_matrix, csr_matrix
+from scipy.sparse.linalg import spsolve
 
-# ---- Parámetros del problema ----
-center = (0.5, 0.5)
-r = 0.3333 / 2.0   # radio del hueco
-L = 1.0
+# --- 1. DEFINICIONES ANALÍTICAS Y PREPARACIÓN ---
+x_sym, y_sym = sp.symbols('x y')
+r_squared_sym = sp.Rational(1, 6)**2
 
-# ---- Funciones analítica (reemplazá por las tuyas si las tenés) ----
-# Por defecto pongo un ejemplo que funciona: ua = sin(pi x) sin(pi y)
-# y fa = -Δ ua = 2*pi^2 sin(pi x) sin(pi y).
-# REEMPLAZA estas funciones por ua(x,y) y fa(x,y) que obtuviste analíticamente.
-def ua(x, y):
-    return np.sin(np.pi * x) * np.sin(np.pi * y)
+# Solución analítica u_a
+u_d = x_sym * (1 - x_sym) * y_sym * (1 - y_sym)
+u_n = ((x_sym - 0.5)**2 + (y_sym - 0.5)**2 - r_squared_sym)**2
+u_a = u_d * u_n
+lap_u_a = sp.diff(u_a, x_sym, 2) + sp.diff(u_a, y_sym, 2)
 
-def fa(x, y):
-    return 2 * (np.pi**2) * np.sin(np.pi * x) * np.sin(np.pi * y)
+f_a_func = sp.lambdify((x_sym, y_sym), sp.simplify(lap_u_a), "numpy")
+u_a_func = sp.lambdify((x_sym, y_sym), u_a, "numpy")
 
-# ---- Rutina general para armar y resolver el problema en una malla NxN ----
-def solve_for_N(N):
-    """
-    N: número de nodos por eje (ej: 9, 11, 21, ...)
-    Devuelve:
-      x_flat, y_flat, u_full (vector tamaño N*N con np.nan para nodos 'Externo'),
-      ua_full (valor analítico en cada nodo), EA (error absoluto por nodo),
-      h (separación)
-    """
-    x = np.linspace(0, L, N)
-    y = np.linspace(0, L, N)
-    h = x[1] - x[0]
+def f_xy(xv, yv):
+    return f_a_func(xv, yv)
+
+# Dimensiones N (N x N nodos) a analizar
+N_list = [9, 11, 21, 31, 41, 51]
+results = [] # Lista para almacenar los resultados del Punto 9
+
+# --- 2. REPETICIÓN DEL CÁLCULO DE CONVERGENCIA (Punto 8) ---
+print("Realizando cálculos de convergencia para obtener métricas...")
+
+for N in N_list:
+    n = N
+    L = 1.0
+    x = np.linspace(0, L, n)
+    y = np.linspace(0, L, n)
+    h = x[1] - x[0] # Separación entre nodos
+    N_total = n * n
+    
     X, Y = np.meshgrid(x, y)
-    x_flat = X.flatten()
-    y_flat = Y.flatten()
-    total = N * N
+    coords = np.column_stack((X.flatten(), Y.flatten()))
 
-    # Clasificación: Dirichlet (borde exterior), Externo (dentro del hueco), Interno/Neumann
-    is_dirichlet = (np.isclose(x_flat, 0.0) | np.isclose(x_flat, L) |
-                    np.isclose(y_flat, 0.0) | np.isclose(y_flat, L))
-    dist = np.sqrt((x_flat - center[0])**2 + (y_flat - center[1])**2)
-    is_externo = dist < r - 1e-12
+    center = (0.5, 0.5)
+    r = 0.3333 / 2.0 
+    
+    # 2.1. Clasificación de Nodos
+    is_dirichlet = (np.isclose(coords[:,0], 0) | np.isclose(coords[:,0], L) |
+                    np.isclose(coords[:,1], 0) | np.isclose(coords[:,1], L))
+    dist_to_center = np.sqrt((coords[:,0] - center[0])**2 + (coords[:,1] - center[1])**2)
+    is_inside_hole = dist_to_center < r - 1e-12
 
-    # Inicialmente marcar todos como 'Interno'
-    node_type = np.array(['Interno'] * total, dtype=object)
+    node_type = np.full(N_total, 'Interno', dtype=object)
     node_type[is_dirichlet] = 'Dirichlet'
-    node_type[is_externo] = 'Externo'
+    node_type[is_inside_hole] = 'Externo'
 
-    # Detectar Neumann: internos que tienen al menos un vecino 'Externo'
-    def ij_to_k(i, j): return i * N + j
-    for ii in range(N):
-        for jj in range(N):
-            k = ij_to_k(ii, jj)
-            if node_type[k] != 'Interno':
-                continue
-            # vecinos 4-conectividad
-            for (ni, nj) in [(ii+1, jj),(ii-1, jj),(ii, jj+1),(ii, jj-1)]:
-                if 0 <= ni < N and 0 <= nj < N:
-                    kk = ij_to_k(ni, nj)
+    def ij_to_k(i, j): return i * n + j
+
+    for i in range(n):
+        for j in range(n):
+            k = ij_to_k(i, j)
+            if node_type[k] != 'Interno': continue
+            for ii, jj in [(i+1, j), (i-1, j), (i, j+1), (i, j-1)]:
+                if 0 <= ii < n and 0 <= jj < n:
+                    kk = ij_to_k(ii, jj)
                     if node_type[kk] == 'Externo':
                         node_type[k] = 'Neumann'
                         break
 
-    # Mapear incógnitas: solo nodos que no son Externo forman parte del sistema
-    idx_map = -np.ones(total, dtype=int)
+    # 2.2. Índice y Construcción del Sistema
+    idx_map = -np.ones(N_total, dtype=int)
     counter = 0
-    for k in range(total):
-        if node_type[k] != 'Externo':
+    for k in range(N_total):
+        if node_type[k] in ['Interno', 'Neumann']:
             idx_map[k] = counter
             counter += 1
     N_unknowns = counter
 
-    # Construcción de A y b
-    A = np.zeros((N_unknowns, N_unknowns), dtype=float)
-    b = np.zeros(N_unknowns, dtype=float)
+    A = lil_matrix((N_unknowns, N_unknowns), dtype=float)
+    b = np.zeros(N_unknowns)
 
-    # Armado
-    for i in range(N):
-        for j in range(N):
+    for i in range(n):
+        for j in range(n):
             k = ij_to_k(i, j)
             row = idx_map[k]
-            if row == -1:
-                continue
-            typ = node_type[k]
-            xk = x_flat[k]; yk = y_flat[k]
+            if row == -1: continue
 
-            if typ == 'Dirichlet':
-                # Imponer u = 0
-                A[row, row] = 1.0
-                b[row] = 0.0
-                continue
+            xk, yk = coords[k]
+            center_coeff = 4.0 
+            b_val = -h**2 * f_xy(xk, yk) 
+            
+            neighbors = [(i + 1, j), (i - 1, j), (i, j + 1), (i, j - 1)]
+            for (ii, jj) in neighbors:
+                kk = ij_to_k(ii, jj)
+                if 0 <= ii < n and 0 <= jj < n:
+                    tipo_vecino = node_type[kk]
+                    if tipo_vecino == 'Externo':
+                        center_coeff -= 1.0 
+                    elif tipo_vecino != 'Dirichlet':
+                        neighbor_idx = idx_map[kk]
+                        A[row, neighbor_idx] = -1.0
+            A[row, row] = center_coeff
+            b[row] = b_val
 
-            if typ == 'Neumann':
-                # Aproximación de la derivada normal: nx*(u_E - u_W)/(2h) + ny*(u_N - u_S)/(2h) = 0
-                nx = (xk - center[0]) / dist[k]
-                ny = (yk - center[1]) / dist[k]
+    # 2.3. Resolver, Reconstruir y Calcular Error
+    A_csr = csr_matrix(A)
+    u_vec = spsolve(A_csr, b)
 
-                # Indices de vecinos (si están dentro de la malla)
-                west  = ij_to_k(i, j-1) if j-1 >= 0 else None
-                east  = ij_to_k(i, j+1) if j+1 < N else None
-                south = ij_to_k(i-1, j) if i-1 >= 0 else None
-                north = ij_to_k(i+1, j) if i+1 < N else None
+    U_grid = np.full(N_total, np.nan, dtype=float)
+    U_grid[is_dirichlet] = 0.0
+    for k in range(N_total):
+        mk = idx_map[k]
+        if mk != -1:
+            U_grid[k] = u_vec[mk]
+            
+    U_grid_2D = U_grid.reshape((n, n))
+    U_analytic_2D = u_a_func(X, Y).reshape((n, n))
+    
+    E_abs_2D = np.abs(U_analytic_2D - U_grid_2D)
+    valid_mask = ~np.isnan(E_abs_2D)
+    E_abs_valid = E_abs_2D[valid_mask]
 
-                # Llenar fila con coeficientes correspondientes
-                # Notar: si el vecino es Externo no existe idx_map -> será -1 y no sumamos
-                if east is not None and idx_map[east] != -1:
-                    A[row, idx_map[east]] +=  nx / (2*h)
-                if west is not None and idx_map[west] != -1:
-                    A[row, idx_map[west]] += -nx / (2*h)
-                if north is not None and idx_map[north] != -1:
-                    A[row, idx_map[north]] +=  ny / (2*h)
-                if south is not None and idx_map[south] != -1:
-                    A[row, idx_map[south]] += -ny / (2*h)
-
-                b[row] = 0.0
-                continue
-
-            # Interno normal: Laplaciano 5 puntos (discretización central)
-            A[row, row] = 4.0 / h**2
-            # vecinos W,E,S,N
-            neighbors = []
-            if j-1 >= 0: neighbors.append(ij_to_k(i, j-1))
-            if j+1 < N:  neighbors.append(ij_to_k(i, j+1))
-            if i-1 >= 0: neighbors.append(ij_to_k(i-1, j))
-            if i+1 < N:  neighbors.append(ij_to_k(i+1, j))
-
-            for nb in neighbors:
-                if idx_map[nb] != -1:
-                    A[row, idx_map[nb]] = -1.0 / h**2
-                else:
-                    # vecino fuera del dominio (Externo) o borde Dirichlet (en ese caso idx_map puede ser -1 si era Externo)
-                    # si fuera Dirichlet el valor es 0 por lo que no se añade a b
-                    pass
-
-            # término fuente f(x,y)
-            b[row] = fa(xk, yk)
-
-    # Resolver sistema lineal
-    # Protección si A no es cuadrada o singular
-    try:
-        u_unknown = np.linalg.solve(A, b)
-    except np.linalg.LinAlgError as e:
-        raise RuntimeError(f"Error al resolver sistema para N={N}: {e}")
-
-    # Reconstruir vector completo (N*N) con np.nan en 'Externo'
-    u_full = np.full(total, np.nan)
-    for k in range(total):
-        idx = idx_map[k]
-        if idx != -1:
-            u_full[k] = u_unknown[idx]
-        else:
-            u_full[k] = np.nan
-
-    # Solución analítica y error absoluto
-    ua_full = ua(x_flat, y_flat)
-    EA = np.abs(u_full - ua_full)
-    # Para nodos Externo dejamos EA como nan para que no formen parte de estadísticas
-    EA[is_externo] = np.nan
-
-    return x_flat, y_flat, u_full, ua_full, EA, h, node_type
-
-# ---- Lista de mallados tal como pediste (cantidad total de nodos) ----
-mallados = [81, 121, 441, 961, 1681, 2601]
-Ns = [int(np.sqrt(m)) for m in mallados]
-
-# ---- Recorrer mallados y construir la tabla ----
-resultados = []
-for N in Ns:
-    print(f"Resolviendo para malla {N}x{N} ...")
-    x_flat, y_flat, u_full, ua_full, EA, h, node_type = solve_for_N(N)
-
-    # Estadísticas ignorando nan (nodos Externo)
-    EA_valid = EA[~np.isnan(EA)]
-    ea_prom = np.mean(EA_valid)
-    ea_max  = np.max(EA_valid)
-
-    resultados.append({
-        "Cantidad de nodos": N*N,
-        "N (por eje)": N,
-        "Separación h": h,
-        "EA promedio": ea_prom,
-        "EA máximo": ea_max
+    E_MAX = np.max(E_abs_valid)
+    E_promedio = np.mean(E_abs_valid)
+    
+    results.append({
+        'N_total': N_total, 
+        'h': h, 
+        'E_MAX': E_MAX, 
+        'E_promedio': E_promedio
     })
 
-# DataFrame final
-df = pd.DataFrame(resultados)
-# Ordenar por cantidad de nodos
-df = df.sort_values(by="Cantidad de nodos").reset_index(drop=True)
-print("\nTabla resumen (punto 9):")
-print(df.to_string(index=False))
+# --- 3. PUNTO 9: Tabla de Resultados ---
+print("\n" + "="*50)
+print("PUNTO 9: TABLA DE CONVERGENCIA (Método de Diferencias Finitas)")
+print("="*50)
 
-plt.figure(figsize=(8,5))
-plt.plot(df["Cantidad de nodos"], df["EA máximo"], marker="o")
-plt.xlabel("Cantidad de nodos")
-plt.ylabel("Error Absoluto Máximo (EA_max)")
-plt.title("EA máximo vs Cantidad de nodos")
-plt.grid(True)
-plt.tight_layout()
+print("{:^10} | {:^15} | {:^15} | {:^15}".format("Nodos Total", "Separación h", "E_A Máximo", "E_A Promedio"))
+print("-" * 60)
+for r in results:
+    print("{:<10} | {:<15.6e} | {:<15.6e} | {:<15.6e}".format(
+        r['N_total'], r['h'], r['E_MAX'], r['E_promedio']
+    ))
+print("-" * 60)
+
+# --- 4. PUNTO 10: Gráficos de Convergencia 2D ---
+
+N_total_arr = np.array([r['N_total'] for r in results])
+E_MAX_arr = np.array([r['E_MAX'] for r in results])
+E_promedio_arr = np.array([r['E_promedio'] for r in results])
+
+fig, ax = plt.subplots(figsize=(10, 6))
+
+# Gráfico 1: E_A Máximo vs. Cantidad de Nodos
+ax.plot(N_total_arr, E_MAX_arr, 'o-', label='$E_{A, \text{Máximo}}$', color='red')
+ax.set_title('Punto 10: Convergencia del Error Máximo vs. Cantidad de Nodos')
+ax.set_xlabel('Cantidad de Nodos (N²)')
+ax.set_ylabel('Error Absoluto Máximo ($E_{MAX}$)')
+ax.grid(True, which="both", ls="--")
+ax.legend()
 plt.show()
 
-# ----- Gráfico del EA promedio -----
-plt.figure(figsize=(8,5))
-plt.plot(df["Cantidad de nodos"], df["EA promedio"], marker="o")
-plt.xlabel("Cantidad de nodos")
-plt.ylabel("Error Absoluto Promedio (EA_prom)")
-plt.title("EA promedio vs Cantidad de nodos")
-plt.grid(True)
-plt.tight_layout()
+# Gráfico 2: E_A Promedio vs. Cantidad de Nodos
+fig, ax = plt.subplots(figsize=(10, 6))
+
+ax.plot(N_total_arr, E_promedio_arr, 's-', label='$E_{A, \text{Promedio}}$', color='blue')
+ax.set_title('Punto 10: Convergencia del Error Promedio vs. Cantidad de Nodos')
+ax.set_xlabel('Cantidad de Nodos (N²)')
+ax.set_ylabel('Error Absoluto Promedio ($E_{\text{promedio}}$)')
+ax.grid(True, which="both", ls="--")
+ax.legend()
 plt.show()
+
+print("\nAnálisis DF de los Puntos 9 y 10 completado. ✔")
