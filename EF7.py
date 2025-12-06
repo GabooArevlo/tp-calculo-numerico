@@ -1,4 +1,4 @@
-# punto7_ensamblado.py
+# punto7_ensamblado.
 import numpy as np
 from scipy.spatial import Delaunay
 import sympy as sp
@@ -8,23 +8,21 @@ import scipy.sparse.linalg as spla
 # -------------------------
 # 1) DEFINICIÓN ANALÍTICA
 # -------------------------
-# Definí aquí ua(x,y). Si querés usar otra, reemplazá la expresión simbólica.
+# Definí aquí ua(x,y). 
 x, y, theta = sp.symbols('x y theta')
 
-# sugerencia (reemplazá si tu ua es otra):
 u_d = x*(1 - x)*y*(1 - y)
-# u_n como en los mensajes previos (si tu u_n es distinta, cambiála)
 u_n = ((x - sp.Rational(1,2))**2 + (y - sp.Rational(1,2))**2 - (sp.Rational(1,6))**2)**2
 
 u_a_sym = u_d - u_n
 
 # Laplaciano simbólico -> f_a
 f_a_sym = sp.simplify(sp.diff(u_a_sym, x, 2) + sp.diff(u_a_sym, y, 2))
-# grad u for Neumann
+# grad u para Neumann
 u_x_sym = sp.diff(u_a_sym, x)
 u_y_sym = sp.diff(u_a_sym, y)
 
-# lambdify numeric functions
+# lambdify funciones numericas
 fa = sp.lambdify((x, y), f_a_sym, "numpy")
 u_x_num = sp.lambdify((x, y), u_x_sym, "numpy")
 u_y_num = sp.lambdify((x, y), u_y_sym, "numpy")
@@ -54,7 +52,7 @@ is_dirichlet = np.isclose(nodes[:,0], 0.0) | np.isclose(nodes[:,0], 1.0) | \
 is_externo = dist < r - tol
 is_neumann = np.isclose(dist, r, atol=1e-4)
 
-# valid nodes for triangulation (exclude externo)
+# nodos validos para triangulacion
 valid_mask = ~is_externo
 coords_valid = nodes[valid_mask]
 global_idx_valid = np.where(valid_mask)[0]
@@ -82,7 +80,7 @@ def element_stiffness(x1, y1, x2, y2, x3, y3):
     return Ke, A
 
 def element_load(x1, y1, x2, y2, x3, y3, f_func):
-    # centroid quadrature: fe_i = (A/3) * f(xc,yc)
+    # cuadratura del centroide: fe_i = (A/3) * f(xc,yc)
     xc = (x1 + x2 + x3) / 3.0
     yc = (y1 + y2 + y3) / 3.0
     A = 0.5 * np.linalg.det(np.array([[1, x1, y1],
@@ -94,7 +92,7 @@ def element_load(x1, y1, x2, y2, x3, y3, f_func):
 # -------------------------
 # 5) ENSAMBLAJE GLOBAL A y b
 # -------------------------
-# mapping global node -> index in unknown system (exclude 'Externo' nodes)
+# mapeado de nodos globales
 idx_map = -np.ones(n_nodes, dtype=int)
 counter = 0
 for k in range(n_nodes):
@@ -103,7 +101,7 @@ for k in range(n_nodes):
         counter += 1
 N_unknowns = counter
 
-# use sparse construction
+# uso sparse construction
 from scipy.sparse import lil_matrix
 A = lil_matrix((N_unknowns, N_unknowns), dtype=float)
 b = np.zeros(N_unknowns, dtype=float)
@@ -125,16 +123,16 @@ for el in elements:
             A[Ii, Jj] += Ke[i_local, j_local]
 
 # -------------------------
-# 6) APORTES DE NEUMANN EN ARISTAS DEL HUECO (si g != 0)
+# 6) APORTES DE NEUMANN EN ARISTAS DEL HUECO 
 # -------------------------
-# compute derivative normal g_N on the circle using symbolic gradient lambdified
+#calculo la derivada normal g_N en el círculo usando el gradiente simbólico lambdificado
 def gN_at_point(xp, yp):
-    # normal is (xp - xc, yp - yc)/r
+    # normal es (xp - xc, yp - yc)/r
     nx = (xp - center[0]) / np.hypot(xp - center[0], yp - center[1])
     ny = (yp - center[1]) / np.hypot(xp - center[0], yp - center[1])
     return u_x_num(xp, yp)*nx + u_y_num(xp, yp)*ny
 
-# find edges (unique sorted pairs) from elements
+# encontrar edges from elements
 edges = set()
 for el in elements:
     a, bidx, c = el
@@ -143,15 +141,15 @@ for el in elements:
         edge = (min(u,v), max(u,v))
         edges.add(edge)
 
-# For each edge with both nodes flagged as is_neumann add edge contribution
+# Para cada arista con ambos nodos marcados como is_neumann, agrego la contribución de la arista
 for (a,bidx) in edges:
     if is_neumann[a] and is_neumann[bidx]:
         xa, ya = nodes[a]; xb, yb = nodes[bidx]
         Ledge = np.hypot(xa - xb, ya - yb)
         xm, ym = 0.5*(xa+xb), 0.5*(ya+yb)
         gmid = gN_at_point(xm, ym)
-        # linear basis on edge -> contribute (L/6) * [2*g(a)+g(b)] etc.
-        # simplest: distribute integral of g*v over edge equally to the two nodes:
+        # base lineal en el borde 
+        # distribuyo integral de g*v sobre el borde de manera equitativa a los dos nodos:
         contrib = (Ledge/2.0) * gmid * 0.5
         Ia = idx_map[a]; Ib = idx_map[bidx]
         if Ia != -1: b[Ia] += contrib
@@ -160,16 +158,16 @@ for (a,bidx) in edges:
 # -------------------------
 # 7) IMPONER DIRICHLET (bordes exteriores u=0)
 # -------------------------
-# set rows/cols for Dirichlet nodes
+# fijo rows/cols para nodos diritech
 for k in range(n_nodes):
     if is_dirichlet[k] and (idx_map[k] != -1):
         idx = idx_map[k]
-        # zero row, set diag=1 and rhs = 0
+        # fila cero, establecer diag=1 y rhs = 0
         A[idx, :] = 0.0
         A[idx, idx] = 1.0
         b[idx] = 0.0
 
-# Convert A to CSR for nicer printing/usage
+# Convertir A a CSR 
 A_csr = A.tocsr()
 
 # -------------------------
@@ -181,11 +179,7 @@ print("Número de elementos (triángulos):", len(elements))
 print("Matriz A: shape =", A_csr.shape)
 print("Vector b: shape =", b.shape)
 
-# Optionally: print a small portion of A and b
+# print una pequeña porcion de A y B
 A_dense_small = A_csr.toarray()
 print("\nPorción top-left de A (5x5):\n", A_dense_small[:5,:5])
 print("\nPorción de b (primeros 10):\n", b[:10])
-
-# Guardar A y b a archivos si querés
-# sparse.save_npz("A_ensamblada.npz", A_csr)
-# np.savetxt("b_ensamblada.csv", b, delimiter=",")
