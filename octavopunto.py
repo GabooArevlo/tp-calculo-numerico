@@ -145,7 +145,7 @@ for N in N_list:
     
     print(f"Malla {N}x{N} ({N_total} nodos): E_MAX = {E_MAX:.6e}")
     
-# --- 3. GRÁFICOS (Para el último N o el requerido) ---
+# --- 3. GRÁFICOS ---
 
 def plot_3d(X, Y, Z, title, zlabel, N_nodes, E_max=None):
     """Función auxiliar para graficar superficies 3D."""

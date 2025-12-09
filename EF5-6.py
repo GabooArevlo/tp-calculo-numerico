@@ -4,7 +4,7 @@ from scipy.spatial import Delaunay
 import matplotlib.pyplot as plt
 
 # ---------------------------
-#  (A) NODOS (usa tus nodos definidos en Punto 1)
+#  (A) NODOS (usa los nodos definidos en Punto 1)
 # ---------------------------
 nodes = [
     (0.0, 0.0),
@@ -27,14 +27,14 @@ nodes = [
     (0.75, 0.25),
     (0.25, 0.75),
     (0.75, 0.75),
-    # circle points (Neumann)
+    #  Neumann
     (0.5 + 0.3333/2.0, 0.5),
     (0.5 - 0.3333/2.0, 0.5),
     (0.5, 0.5 + 0.3333/2.0),
     (0.5, 0.5 - 0.3333/2.0),
-    # center (Externo)
+    # Externo
     (0.5, 0.5),
-    # more interiors
+    # interior
     (0.5, 0.25),
     (0.5, 0.75),
     (0.25, 0.5)
@@ -43,7 +43,7 @@ coords = np.array(nodes)
 n_nodes = coords.shape[0]
 
 # ---------------------------
-#  (B) Clasificación simple: Dirichlet (outer boundary), Externo (inside hole), Neumann (on hole)
+#  (B) Clasificación simple: Dirichlet , Externo, Neumann 
 # ---------------------------
 center = np.array([0.5, 0.5])
 r = 0.3333 / 2.0
@@ -54,8 +54,7 @@ is_dirichlet = np.isclose(coords[:,0], 0.0) | np.isclose(coords[:,0], 1.0) | \
 dist = np.linalg.norm(coords - center, axis=1)
 is_externo = dist < r - tol
 is_neumann = np.isclose(dist, r, atol=1e-4)
-
-# valid nodes to triangulate: exclude 'Externo' nodes
+# uso nodos validos
 valid_mask = ~is_externo
 coords_valid = coords[valid_mask]
 global_index_of_valid = np.where(valid_mask)[0]
@@ -105,19 +104,19 @@ def element_load_vector(x1, y1, x2, y2, x3, y3, f_func):
 # (D) función f(x,y) (forzante) y g en Neumann (si distinto de cero)
 # ---------------------------
 def fa(x, y):
-    # Ejemplo: reemplazá por tu fa analítica si la tenés
-    # por defecto uso fa consistente con ua=sin(pi x) sin(pi y)
+    # Ejemplo
+    # uso fa consistente con ua=sin(pi x) sin(pi y)
     return 2 * (np.pi**2) * np.sin(np.pi * x) * np.sin(np.pi * y)
 
 def g_neumann_on_edge(xm, ym):
-    # Ejemplo si g != 0; si tu problema tiene g=0 devolvé 0
+    # Ejemplo si g != 0; si el problema tiene g=0 devolvé 0
     return 0.0
 
 # ---------------------------
 # (E) Ensamblado global A y b
 # ---------------------------
 N_unknowns = np.sum(~is_externo)  # nodos que participan
-# mapping global node index -> eq index (only for nodes not Externo)
+# mapping global node index -> eq index 
 idx_map = -np.ones(n_nodes, dtype=int)
 counter = 0
 for k in range(n_nodes):
@@ -175,14 +174,14 @@ for edge in edges:
         xa, ya = coords[a]
         xb, yb = coords[bnode]
         Ledge = np.hypot(xa - xb, ya - yb)
-        # integrar g * phi over the edge: for linear, integral contributes (L/6) * [2*g(a)+g(b)] to node a and reversed to node b
-        # use midpoint rule simpler: contribution to both nodes approx (L/2) * g(mid) * (1/2) each => (L/4)*g(mid)
+        # integrar g * phi 
+        # uso midpoint rule simpler: 
         xm, ym = (xa + xb)/2.0, (ya + yb)/2.0
         gmid = g_neumann_on_edge(xm, ym)
-        # contributions to b (if nodes are part of system)
+        # contributions to b 
         Ia = idx_map[a]; Ib = idx_map[bnode]
         if Ia != -1:
-            b[Ia] += (Ledge/2.0) * gmid * 0.5  # distribute equally
+            b[Ia] += (Ledge/2.0) * gmid * 0.5  # distribuir
         if Ib != -1:
             b[Ib] += (Ledge/2.0) * gmid * 0.5
 
@@ -195,7 +194,7 @@ for nd in dirichlet_nodes:
     idx = idx_map[nd]
     if idx == -1:
         continue
-    # impose u=0 at idx: set row to zero, put diagonal 1 and b=0
+    # imposoner u=0 : poner diagonal 1 y b=0
     A[idx, :] = 0.0
     A[idx, idx] = 1.0
     b[idx] = 0.0
@@ -217,7 +216,7 @@ print("Solución nodal (u) por nodo global index:\n", u_full)
 # (I) Graficar solución (scatter + triangulación)
 # ---------------------------
 plt.figure(figsize=(7,6))
-# plot triangulation (only elements used)
+# plot triangulation 
 for el in elements:
     pts = coords[list(el)+[el[0]]]
     plt.plot(pts[:,0], pts[:,1], 'k-', linewidth=0.8)
