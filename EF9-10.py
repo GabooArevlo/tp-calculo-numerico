@@ -16,7 +16,7 @@ x, y, theta = sp.symbols('x y theta')
 # Funciones de la solución analítica del problema (u_a = u_d - u_n)
 u_d = x * (1 - x) * y * (1 - y)
 u_n = ((x - sp.Rational(1,2))**2 + (y - sp.Rational(1,2))**2 - (sp.Rational(1,6))**2)**2
-u_a_sym = u_d - u_n
+u_a_sym = u_d * u_n
 
 # Laplaciano simbólico -> f_a (Función fuente)
 f_a_sym = sp.simplify(sp.diff(u_a_sym, x, 2) + sp.diff(u_a_sym, y, 2))
@@ -26,7 +26,7 @@ u_y_sym = sp.diff(u_a_sym, y)
 
 # Funciones numéricas
 u_a_num = sp.lambdify((x, y), u_a_sym, "numpy")
-fa = sp.lambdify((x, y), f_a_sym, "numpy")
+fa = sp.lambdify((x, y), -f_a_sym, "numpy")
 u_x_num = sp.lambdify((x, y), u_x_sym, "numpy")
 u_y_num = sp.lambdify((x, y), u_y_sym, "numpy")
 

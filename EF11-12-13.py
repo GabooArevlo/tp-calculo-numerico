@@ -21,7 +21,7 @@ r_hole_sym = sp.Rational(3333, 20000)
 # u_a = u_d - u_n
 u_d_sym = x_sym * (1 - x_sym) * y_sym * (1 - y_sym)
 u_n_sym = ((x_sym - 0.5)**2 + (y_sym - 0.5)**2 - r_hole_sym**2)**2
-u_a_sym = u_d_sym - u_n_sym
+u_a_sym = u_d_sym * u_n_sym
 
 # Funciones numéricas (lambdify)
 u_analitica = sp.lambdify((x_sym, y_sym), u_a_sym, "numpy")
