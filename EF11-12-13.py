@@ -155,7 +155,7 @@ def resolver_fem(filename):
         Ke = area * (grad @ grad.T)
 
         xm = (x1 + x2 + x3)/3; ym = (y1 + y2 + y3)/3
-        fe = f_fuente(xm, ym) * area / 3
+        fe = -f_fuente(xm, ym) * area / 3
 
         for a in range(3):
             b[T[a]] += fe
