@@ -1,5 +1,5 @@
 # ============================================================
-# CÓDIGO EF: Puntos 7, 9 y 10 
+# CÓDIGO EF: Puntos 7, 9 y 10 (CORREGIDO)
 # ============================================================
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,13 +13,19 @@ import scipy.sparse.linalg as spla
 # -------------------------
 x, y, theta = sp.symbols('x y theta')
 
-# Funciones de la solución analítica del problema (u_a = u_d - u_n)
+# Radio del agujero (1/6 = 0.3333/2.0)
+r_hole_sym = sp.Rational(1, 6)
+
+# Funciones de la solución analítica del problema (u_a = u_d * u_n)
 u_d = x * (1 - x) * y * (1 - y)
-u_n = ((x - sp.Rational(1,2))**2 + (y - sp.Rational(1,2))**2 - (sp.Rational(1,6))**2)**2
-u_a_sym = u_d - u_n
+u_n = ((x - sp.Rational(1,2))**2 + (y - sp.Rational(1,2))**2 - r_hole_sym**2)**2
+
+# CORRECCIÓN: u_a = u_d * u_n
+u_a_sym = u_d * u_n # <--- ¡CAMBIO CLAVE!
 
 # Laplaciano simbólico -> f_a (Función fuente)
-f_a_sym = sp.simplify(sp.diff(u_a_sym, x, 2) + sp.diff(u_a_sym, y, 2))
+# f_fuente = -Laplaciano(u_a) para resolver -Δu = f
+f_a_sym = sp.simplify(-(sp.diff(u_a_sym, x, 2) + sp.diff(u_a_sym, y, 2))) # <--- Laplaciano negativo
 # Gradiente para Neumann (necesario para el C.B. gN)
 u_x_sym = sp.diff(u_a_sym, x)
 u_y_sym = sp.diff(u_a_sym, y)
@@ -39,7 +45,7 @@ nodes = np.array([
     (0.75, 1.0), (0.5, 1.0), (0.25, 1.0), (0.0, 1.0),
     (0.0, 0.75), (0.0, 0.5), (0.0, 0.25),
     (0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75),
-    # Puntos de Neumann (en el círculo)
+    # Puntos de Neumann (en el círculo, r_hole_num = 0.3333/2.0)
     (0.5 + 0.3333/2.0, 0.5), (0.5 - 0.3333/2.0, 0.5),
     (0.5, 0.5 + 0.3333/2.0), (0.5, 0.5 - 0.3333/2.0),
     (0.5, 0.5), # Externo (Nodo 24)
@@ -135,18 +141,20 @@ for (a,bidx) in edges:
         Ledge = np.hypot(xa - xb, ya - yb)
         xm, ym = 0.5*(xa+xb), 0.5*(ya+yb)
         gmid = gN_at_point(xm, ym)
-        contrib = (Ledge/2.0) * gmid * 0.5
+        # Contribución de la integral de borde ∫ gN * phi_i dΓ ≈ L * gN_mid * 0.5
+        contrib = Ledge * gmid * 0.5 # Corregida la contribución, estaba Ledge/2.0 * gmid * 0.5
         Ia = idx_map[a]; Ib = idx_map[bidx]
         if Ia != -1: b[Ia] += contrib
         if Ib != -1: b[Ib] += contrib
 
-# C.B. Dirichlet (Imposición de u=0 en la frontera)
+# C.B. Dirichlet (Imposición de u=u_a en la frontera)
 for k in range(n_nodes):
     if is_dirichlet[k] and (idx_map[k] != -1):
         idx = idx_map[k]
         A[idx, :] = 0.0
         A[idx, idx] = 1.0
-        b[idx] = u_a_num(nodes[k, 0], nodes[k, 1]) # Usar el valor analítico (u_a=0 en el borde)
+        # El valor de u_a es 0 en el borde exterior, gracias al término u_d
+        b[idx] = u_a_num(nodes[k, 0], nodes[k, 1]) 
 
 # -------------------------
 # 5) RESOLVER SISTEMA (Punto 9)
@@ -183,21 +191,26 @@ for k in range(n_nodes):
 # -------------------------
 from matplotlib.tri import Triangulation
 
-triang = Triangulation(nodes[:, 0], nodes[:, 1], tri.simplices)
+# Obtener los nodos válidos para la triangulación
+nodes_valid = nodes[valid_mask]
+# Mapear los índices locales de tri.simplices a los índices globales (0 a N_unknowns-1) para Triangulation
+triang_indices = np.array([idx_map[i] for i in global_idx_valid])
+triang = Triangulation(nodes_valid[:, 0], nodes_valid[:, 1], tri.simplices)
 
 # Gráfico 3D de la Solución (Punto 9)
 fig_sol = plt.figure(figsize=(10, 7))
 ax_sol = fig_sol.add_subplot(111, projection='3d')
-ax_sol.plot_trisurf(triang, U_full, cmap='viridis', linewidth=0.2, antialiased=True)
-ax_sol.set_title("Solución Numérica FEM P1 (Punto 9)")
+# Usamos U_h_valid que tiene N_unknowns elementos, que coincide con el tamaño de nodes_valid
+ax_sol.plot_trisurf(triang, U_h_valid, cmap='viridis', linewidth=0.2, antialiased=True) 
+ax_sol.set_title("Solución Numérica FEM P1 (Punto 9) - Malla Manual")
 ax_sol.set_xlabel('x'); ax_sol.set_ylabel('y'); ax_sol.set_zlabel('$u_h$')
 plt.show()
 
 # Gráfico 3D del Error (Punto 10)
 fig_err = plt.figure(figsize=(10, 7))
 ax_err = fig_err.add_subplot(111, projection='3d')
-ax_err.plot_trisurf(triang, Error_full, cmap='plasma', linewidth=0.2, antialiased=True)
-ax_err.set_title("Error absoluto $|u_h - u_a|$ (Punto 10)")
+ax_err.plot_trisurf(triang, Error_valid, cmap='plasma', linewidth=0.2, antialiased=True)
+ax_err.set_title("Error absoluto $|u_h - u_a|$ (Punto 10) - Malla Manual")
 ax_err.set_xlabel('x'); ax_err.set_ylabel('y'); ax_err.set_zlabel('Error Absoluto')
 plt.show()
 

@@ -1,5 +1,5 @@
 # ============================================================
-# CÓDIGO FINAL FEM: Puntos 11, 12 y 13 
+# CÓDIGO FINAL FEM (Corregido)
 # ============================================================
 
 import gmsh
@@ -12,20 +12,29 @@ import sympy as sp
 import os
 
 # ----------------------------------------------------------------
-#  1. DEFINICIÓN ANALÍTICA Y FUENTE
+#  1. DEFINICIÓN ANALÍTICA Y FUENTE (CORREGIDA)
 # ----------------------------------------------------------------
 x_sym, y_sym = sp.symbols('x y')
 r_hole_num = 0.3333 / 2.0
 r_hole_sym = sp.Rational(3333, 20000)
 
-# u_a = u_d - u_n
+# u_d cumple Dirichlet (0 en contorno exterior)
 u_d_sym = x_sym * (1 - x_sym) * y_sym * (1 - y_sym)
+# u_n cumple Neumann (0 en contorno interior)
 u_n_sym = ((x_sym - 0.5)**2 + (y_sym - 0.5)**2 - r_hole_sym**2)**2
-u_a_sym = u_d_sym - u_n_sym
+
+# CORRECCIÓN 1: u_a = u_d * u_n para cumplir ambas CC y ser no negativa.
+u_a_sym = u_d_sym * u_n_sym
+
+# -----------------------------------------------------------
+# CÁLCULO DE LA FUNCIÓN FUENTE f_FEM = -Δu_a
+laplaciano_u_a = sp.diff(u_a_sym, x_sym, 2) + sp.diff(u_a_sym, y_sym, 2)
+# CORRECCIÓN 2: f_fuente = -Laplaciano(u_a) para resolver -Δu = f
+f_fuente_sym = sp.simplify(-laplaciano_u_a) 
+# -----------------------------------------------------------
 
 # Funciones numéricas (lambdify)
 u_analitica = sp.lambdify((x_sym, y_sym), u_a_sym, "numpy")
-f_fuente_sym = sp.simplify(sp.diff(u_a_sym, x_sym, 2) + sp.diff(u_a_sym, y_sym, 2))
 f_fuente = sp.lambdify((x_sym, y_sym), f_fuente_sym, "numpy")
 
 # Gradiente para Neumann
@@ -38,8 +47,11 @@ center = np.array([0.5, 0.5])
 def gN_at_point(xp, yp):
     dx = xp - center[0]; dy = yp - center[1]
     distancia = np.hypot(dx, dy)
-    if np.isclose(distancia, 0.0, atol=1e-8): return 0.0
+    # Evitar división por cero si el punto es exactamente el centro (aunque no debería ocurrir en el borde)
+    if np.isclose(distancia, 0.0, atol=1e-8): return 0.0 
+    # Vector normal unitario n
     nx = dx / distancia; ny = dy / distancia
+    # Derivada Normal = Grad(u) . n
     return u_x_num(xp, yp) * nx + u_y_num(xp, yp) * ny
 
 # ----------------------------------------------------------------
@@ -47,7 +59,6 @@ def gN_at_point(xp, yp):
 # ----------------------------------------------------------------
 def generar_malla_anillo(NN_target, filename):
     
-    #  Definir 'tol' dentro de la función donde se usa 
     tol = 1e-6 
     
     if not gmsh.isInitialized():
@@ -58,13 +69,14 @@ def generar_malla_anillo(NN_target, filename):
     gmsh.model.add("anillo")
     gmsh.option.setNumber("General.Verbosity", 1)
     
+    # lc (Tamaño característico de la malla) basado en el número de nodos
     lc = 1.0 / (np.sqrt(NN_target) / 3.0) 
     
     # Cuadrado exterior y Círculo interior
     square = gmsh.model.occ.addRectangle(0.0, 0.0, 0.0, 1.0, 1.0)
     circle = gmsh.model.occ.addDisk(0.5, 0.5, 0.0, r_hole_num, r_hole_num)
     
-    # Operación de Sustracción
+    # Operación de Sustracción (Anillo)
     gmsh.model.occ.cut([(2, square)], [(2, circle)])
     gmsh.model.occ.synchronize()
 
@@ -117,12 +129,11 @@ def generar_malla_anillo(NN_target, filename):
 
 
 # ================================================================
-#  ENSAMBLADO FEM LINEAL P1 
+#  ENSAMBLADO FEM LINEAL P1 
 # ================================================================
 
 def resolver_fem(filename):
     
-    # Defino 'tol' dentro de la función donde se usa 
     tol = 1e-6
     
     try:
@@ -151,11 +162,14 @@ def resolver_fem(filename):
 
         if area <= tol: continue 
 
+        # Gradientes de las funciones base locales
         grad = np.array([[-1, -1], [ 1, 0], [ 0, 1]]) @ np.linalg.inv(J)
+        # Matriz de Rigidez elemental: Ke = ∫ grad(phi_i) . grad(phi_j) dΩ ≈ Area * grad.T @ grad
         Ke = area * (grad @ grad.T)
 
+        # Vector de Carga elemental (Método de cuadratura de 1 punto en el centroide)
         xm = (x1 + x2 + x3)/3; ym = (y1 + y2 + y3)/3
-        fe = f_fuente(xm, ym) * area / 3
+        fe = f_fuente(xm, ym) * area / 3 # f_fuente se usa como f_FEM en el sistema Ku=F
 
         for a in range(3):
             b[T[a]] += fe
@@ -170,7 +184,7 @@ def resolver_fem(filename):
         line_cells = m.cells_dict["line"]
         
         for i, tag in enumerate(line_data):
-            if tag == 102: 
+            if tag == 102: # Tag del Círculo Interior
                 neumann_edges_indices.append((line_cells[i][0], line_cells[i][1]))
     
     for n1, n2 in neumann_edges_indices:
@@ -178,31 +192,35 @@ def resolver_fem(filename):
         Ledge = np.hypot(xa - xb, ya - yb)
         xm, ym = 0.5*(xa+xb), 0.5*(ya+yb)
         
-        gmid = gN_at_point(xm, ym)
+        gmid = gN_at_point(xm, ym) # gN(x,y) = Grad(u_a).n
+        # Integral de Neumann: ∫ gN * phi_i dΓ ≈ Ledge * gN_mid * phi_i_mid
         contrib = Ledge * gmid 
         
-        b[n1] += contrib * 0.5 
-        b[n2] += contrib * 0.5
+        b[n1] += contrib * 0.5 # phi_1(mid) = 0.5
+        b[n2] += contrib * 0.5 # phi_2(mid) = 0.5
 
     # 3. Condición de Borde de DIRICHLET (Imposición fuerte)
     dirichlet_nodes = []
     for i, (x, y) in enumerate(pts):
+        # Nodos en el contorno exterior del cuadrado [0, 1]x[0, 1]
         if np.isclose(x, 0.0, atol=tol) or np.isclose(x, 1.0, atol=tol) or \
            np.isclose(y, 0.0, atol=tol) or np.isclose(y, 1.0, atol=tol):
             dirichlet_nodes.append(i)
 
+    # Imponer u = u_analitica en el contorno exterior
     for i in dirichlet_nodes:
+        # Fila de A a cero, A[i,i] = 1, b[i] = u_analitica
         A[i, :] = 0
         A[i, i] = 1
         b[i] = u_analitica(pts[i, 0], pts[i, 1])
 
-    # 4. Resolver
+    # 4. Resolver el sistema lineal Ku = F
     Uh = spla.spsolve(A.tocsr(), b)
     return pts, tri, Uh
 
 
 # ================================================================
-#  GRAFICAR UNA SUPERFICIE DE TRIANGULOS
+#  GRAFICAR UNA SUPERFICIE DE TRIANGULOS
 # ================================================================
 
 def grafico_3d(pts, tri, values, title):
@@ -217,7 +235,7 @@ def grafico_3d(pts, tri, values, title):
 
 
 # ================================================================
-#  BUCLE PRINCIPAL (PUNTOS 11–12–13)
+#  BUCLE PRINCIPAL (PUNTOS 11–12–13)
 # ================================================================
 
 mallados_target = [49, 81, 121, 441, 961, 1681, 2601]
@@ -244,9 +262,6 @@ for NN_target in mallados_target:
         continue
     except Exception as e:
         print(f"ERROR: Falló inesperado para la malla {NN_target}: {e}")
-        # Es útil imprimir el error completo en el entorno de desarrollo:
-        # import traceback
-        # traceback.print_exc()
         continue
 
     # Post-proceso
@@ -267,7 +282,8 @@ for NN_target in mallados_target:
 
     # Gráficos (Punto 12)
     grafico_3d(pts, tri, Uh, f"Solución FEM - {N_real} nodos")
-    grafico_3d(pts, tri, error, f"Error absoluto - {N_real} nodos")
+    # El gráfico de error absoluto siempre será positivo
+    grafico_3d(pts, tri, error, f"Error absoluto - {N_real} nodos") 
     
     if os.path.exists(filename):
         os.remove(filename)
